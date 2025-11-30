@@ -35,7 +35,14 @@ const appId = "ourownbulletinboard";
 
 // --- Gemini API Helper ---
 const callGemini = async (prompt) => {
-  const apiKey = ""; // Provided by runtime environment
+  // CHANGED: Now uses the Vercel Environment Variable
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
+  
+  if (!apiKey) {
+    console.error("Missing API Key! Make sure VITE_GEMINI_API_KEY is set in Vercel.");
+    return "Configuration Error: AI Key missing.";
+  }
+
   try {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
@@ -48,12 +55,16 @@ const callGemini = async (prompt) => {
       }
     );
 
-    if (!response.ok) throw new Error('Gemini API Error');
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || 'Gemini API Error');
+    }
+    
     const data = await response.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Creative block! Try again.";
   } catch (error) {
     console.error("AI Error:", error);
-    return "The muse is silent right now. Try again later!";
+    return "The muse is silent right now. (Check API Key restrictions!)";
   }
 };
 
