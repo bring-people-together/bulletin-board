@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, X, Move, User, MessageSquare, Heart, Info, Loader2, Sparkles, Zap, ShieldAlert, LogIn, LogOut, Coffee, Lock } from 'lucide-react';
+import { Plus, X, Move, User, MessageSquare, Heart, Info, Loader2, Sparkles, Zap, ShieldAlert, Lock } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInWithPopup,
-  GoogleAuthProvider,
-  signOut,
+  signInAnonymously, 
   onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -19,8 +17,10 @@ import {
 } from 'firebase/firestore';
 
 // --- Firebase Configuration & Init ---
-// NOTE: For Vercel security, you can replace these strings with import.meta.env.VITE_FIREBASE_...
-// But for this preview to work (if keys weren't restricted), we use strings.
+// NOTE FOR VERCEL DEPLOYMENT:
+// When you copy this to GitHub for Vercel, you should comment out the hardcoded strings
+// and UNCOMMENT the lines using 'import.meta.env' to use your secure Environment Variables.
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -34,10 +34,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const googleProvider = new GoogleAuthProvider();
 const appId = "ourownbulletinboard"; 
 
-
+// --- Gemini API Helper ---
 const callGemini = async (prompt) => {
   // CHANGED: Now uses the Vercel Environment Variable
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
@@ -66,6 +65,7 @@ const callGemini = async (prompt) => {
   }
 };
 
+
 // --- Constants & Styles ---
 const CARD_WIDTH = 220;
 const CARD_HEIGHT = 160;
@@ -93,8 +93,7 @@ const Button = ({ onClick, children, className = "", variant = "primary", disabl
     secondary: "bg-white text-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
     icon: "p-3 rounded-full bg-[#FF0099] text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
     magic: "bg-gradient-to-r from-purple-400 to-pink-500 text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
-    google: "bg-white text-black hover:bg-gray-100",
-    support: "bg-[#00FF00] text-black hover:bg-green-400 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
+    close: "p-1 bg-white hover:bg-gray-100 rounded-full border-2 border-black"
   };
 
   return (
@@ -105,8 +104,8 @@ const Button = ({ onClick, children, className = "", variant = "primary", disabl
 };
 
 // --- OPTIMIZATION: Memoized Card ---
-// 1. We wrap this in React.memo so it DOES NOT re-render when you drag the canvas
-// 2. We use 'will-change-transform' to force GPU rendering
+// This wrapper prevents the card from "flashing" (re-rendering) when the parent container moves.
+// We also use 'will-change-transform' to tell the browser to use the GPU.
 const Card = React.memo(({ data, index, onClick }) => {
   const style = useMemo(() => {
     const COLUMNS = 6; 
@@ -246,13 +245,9 @@ const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting, user }) => {
 
   useEffect(() => {
     if (isOpen) {
-        setFormData({ 
-            name: user?.displayName || '', 
-            message: '', 
-            details: '' 
-        });
+        setFormData({ name: '', message: '', details: '' });
     }
-  }, [isOpen, user]);
+  }, [isOpen]);
 
   const handleChange = (e) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -276,7 +271,7 @@ const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting, user }) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in zoom-in duration-200">
       <div className="bg-white w-full max-w-lg border-4 border-black shadow-[12px_12px_0px_0px_#00FF99] p-6 relative">
-        {/* FIXED: Larger Hit Area for Close Button on Mobile, Removed rotate-animation */}
+        {/* FIXED: Responsive Close Button */}
         <button 
             onClick={onClose} 
             className="absolute top-2 right-2 p-4 active:scale-95 transition-transform z-10 text-black hover:text-red-500"
@@ -448,31 +443,22 @@ export default function App() {
     document.head.appendChild(script);
   }, []);
 
-  // 1. Auth Init
+  // 1. Auth Init (Anonymous only for this version)
   useEffect(() => {
+    const initAuth = async () => {
+        try {
+            setLoginError(false);
+            await signInAnonymously(auth);
+        } catch (err) {
+            console.error("Login Error", err);
+            if (err.code && err.code.includes('requests-from-referer')) {
+                setLoginError(true);
+            }
+        }
+    };
+    initAuth();
     return onAuthStateChanged(auth, setUser);
   }, []);
-
-  const handleLogin = async () => {
-    try {
-        setLoginError(false);
-        await signInWithPopup(auth, googleProvider);
-    } catch (err) {
-        console.error("Login Error", err);
-        // Detect the specific "Hard Lock" error
-        if (err.code && err.code.includes('requests-from-referer')) {
-            setLoginError(true);
-        } else {
-            alert("Login failed! (Did you enable Google Provider in Firebase Console?)");
-        }
-    }
-  };
-
-  const handleLogout = () => signOut(auth);
-
-  const handleDonate = () => {
-      window.open('https://buy.stripe.com/test_placeholder', '_blank');
-  };
 
   // 2. Data Sync
   useEffect(() => {
@@ -495,17 +481,18 @@ export default function App() {
 
   // 3. Handlers
   const handleAddPost = async (data) => {
+    // With anonymous auth, user should always be present if login succeeded
     if (!user) {
-        alert("Please login to post!");
-        return;
+        // Fallback if auth failed
+        alert("Connecting to board... try again in a second.");
+        return; 
     }
     setIsSubmitting(true);
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'board_posts'), {
         ...data,
         createdAt: serverTimestamp(),
-        authorId: user.uid,
-        photoURL: user.photoURL 
+        authorId: user.uid
       });
       setIsAddModalOpen(false);
     } catch (err) {
@@ -516,7 +503,7 @@ export default function App() {
     }
   };
 
-  // Memoized callback so we can pass it to the Memoized Card
+  // Memoized callback
   const handleCardClick = useCallback((data, color) => {
      setSelectedPost({ data, color });
   }, []);
@@ -605,12 +592,6 @@ export default function App() {
       {/* --- HUD --- */}
       <div className="absolute bottom-6 right-6 flex flex-col gap-4 z-40 items-end">
         
-        {/* Support Button */}
-        <Button variant="support" onClick={handleDonate} className="px-4 py-2 rounded-full text-sm animate-bounce-slow">
-            <Coffee size={16} />
-            SUPPORT ME
-        </Button>
-
         <Button variant="secondary" onClick={handleVibeCheck} className="px-4 py-2 rounded-full text-sm">
             <Sparkles size={16} className="text-[#FF0099]" />
             ✨ VIBE CHECK
@@ -621,16 +602,9 @@ export default function App() {
             <button onClick={() => setView(v => ({ ...v, scale: Math.max(v.scale - 0.2, 0.2) }))} className="p-3 hover:bg-gray-100"><div className="w-4 h-0.5 bg-black" /></button>
         </div>
 
-        {/* Dynamic Add/Login Button */}
-        {user ? (
-            <Button variant="icon" onClick={() => setIsAddModalOpen(true)} className="w-16 h-16 rounded-full flex items-center justify-center">
-              <Plus size={32} strokeWidth={3} />
-            </Button>
-        ) : (
-            <Button variant="primary" onClick={handleLogin} className="w-16 h-16 rounded-full flex items-center justify-center p-0">
-               <LogIn size={24} />
-            </Button>
-        )}
+        <Button variant="icon" onClick={() => setIsAddModalOpen(true)} className="w-16 h-16 rounded-full flex items-center justify-center animate-bounce-slow">
+          <Plus size={32} strokeWidth={3} />
+        </Button>
       </div>
 
       {/* --- Top Bar --- */}
@@ -641,12 +615,7 @@ export default function App() {
           </h1>
           <div className="text-xs font-bold mt-1 flex items-center gap-2">
              <span className="bg-black text-white px-1">{posts.length} POSTS</span>
-             {user && (
-                 <button onClick={handleLogout} className="flex items-center gap-1 hover:text-red-500 hover:underline">
-                     <span className="max-w-[100px] truncate">{user.displayName}</span>
-                     <LogOut size={10} />
-                 </button>
-             )}
+             <span className="bg-[#FFFF00] text-black px-1">LIVE</span>
           </div>
         </div>
       </div>
