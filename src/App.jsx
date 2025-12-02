@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Plus, X, Move, User, MessageSquare, Heart, Info, Loader2, Sparkles, Zap, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Plus, X, Move, User, MessageSquare, Heart, Info, Loader2, Sparkles, Zap, ShieldAlert, LogIn, LogOut, Coffee, Lock } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInAnonymously, 
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
   onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -17,7 +19,8 @@ import {
 } from 'firebase/firestore';
 
 // --- Firebase Configuration & Init ---
-// Your specific keys:
+// NOTE: For Vercel security, you can replace these strings with import.meta.env.VITE_FIREBASE_...
+// But for this preview to work (if keys weren't restricted), we use strings.
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -27,22 +30,17 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
-  
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
 const appId = "ourownbulletinboard"; 
 
-// --- Gemini API Helper ---
+
 const callGemini = async (prompt) => {
   // CHANGED: Now uses the Vercel Environment Variable
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
-  
-  if (!apiKey) {
-    console.error("Missing API Key! Make sure VITE_GEMINI_API_KEY is set in Vercel.");
-    return "Configuration Error: AI Key missing.";
-  }
-
   try {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
@@ -71,32 +69,32 @@ const callGemini = async (prompt) => {
 // --- Constants & Styles ---
 const CARD_WIDTH = 220;
 const CARD_HEIGHT = 160;
-const GRID_GAP = 40; // Margin between cards
+const GRID_GAP = 40; 
 const COLORS = [
-  { bg: 'bg-[#FF0099]', text: 'text-white' }, // Hot Pink
-  { bg: 'bg-[#FFFF00]', text: 'text-black' }, // Electric Yellow
-  { bg: 'bg-[#00FFFF]', text: 'text-black' }, // Cyan
-  { bg: 'bg-[#FF3300]', text: 'text-white' }, // Bright Red
-  { bg: 'bg-[#FFFFFF]', text: 'text-black' }, // White
-  { bg: 'bg-[#00FF00]', text: 'text-black' }, // Lime Green
+  { bg: 'bg-[#FF0099]', text: 'text-white' }, 
+  { bg: 'bg-[#FFFF00]', text: 'text-black' }, 
+  { bg: 'bg-[#00FFFF]', text: 'text-black' }, 
+  { bg: 'bg-[#FF3300]', text: 'text-white' }, 
+  { bg: 'bg-[#FFFFFF]', text: 'text-black' }, 
+  { bg: 'bg-[#00FF00]', text: 'text-black' }, 
 ];
 
-// Helper to get random rotation for that "pinned" look
 const getRandomRotation = (seed) => {
   const num = seed.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return (num % 10) - 5; // -5 to 5 degrees
+  return (num % 10) - 5; 
 };
 
 // --- Components ---
 
 const Button = ({ onClick, children, className = "", variant = "primary", disabled = false }) => {
-  const baseStyle = "font-bold border-4 border-black transition-transform active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none";
+  const baseStyle = "font-bold border-4 border-black transition-transform active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none select-none";
   const variants = {
     primary: "bg-[#FFFF00] text-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]",
     secondary: "bg-white text-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
     icon: "p-3 rounded-full bg-[#FF0099] text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
     magic: "bg-gradient-to-r from-purple-400 to-pink-500 text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
-    close: "p-1 bg-white hover:bg-gray-100 rounded-full border-2 border-black"
+    google: "bg-white text-black hover:bg-gray-100",
+    support: "bg-[#00FF00] text-black hover:bg-green-400 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
   };
 
   return (
@@ -106,14 +104,14 @@ const Button = ({ onClick, children, className = "", variant = "primary", disabl
   );
 };
 
-const Card = ({ data, index, onClick }) => {
+// --- OPTIMIZATION: Memoized Card ---
+// 1. We wrap this in React.memo so it DOES NOT re-render when you drag the canvas
+// 2. We use 'will-change-transform' to force GPU rendering
+const Card = React.memo(({ data, index, onClick }) => {
   const style = useMemo(() => {
-    // Deterministic layout logic: Grid system
     const COLUMNS = 6; 
     const row = Math.floor(index / COLUMNS);
     const col = index % COLUMNS;
-    
-    // Add some random offsets for "messy board" vibe but constrained to grid cell
     const offsetX = (data.id.charCodeAt(0) % 20) - 10;
     const offsetY = (data.id.charCodeAt(1) % 20) - 10;
 
@@ -128,7 +126,7 @@ const Card = ({ data, index, onClick }) => {
   return (
     <div
       onClick={() => onClick(data, style.colorTheme)}
-      className={`absolute cursor-pointer group select-none`}
+      className={`absolute cursor-pointer group select-none will-change-transform`}
       style={{
         transform: `translate(${style.x}px, ${style.y}px) rotate(${style.rotation}deg)`,
         width: CARD_WIDTH,
@@ -144,7 +142,6 @@ const Card = ({ data, index, onClick }) => {
         transition-all duration-200
         group-hover:-translate-y-1 group-hover:shadow-[12px_12px_0px_0px_rgba(0,0,0,1)]
       `}>
-        {/* Tape effect */}
         <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-16 h-8 bg-white/40 border border-white/60 rotate-2 backdrop-blur-sm" />
 
         <div className="flex flex-col gap-1 overflow-hidden">
@@ -156,20 +153,23 @@ const Card = ({ data, index, onClick }) => {
           </p>
         </div>
         
-        <div className="text-xs font-mono opacity-80 mt-2 flex justify-between items-center">
-          <span>TAP TO READ</span>
-          <Move size={12} />
+        {/* User Avatar if available */}
+        <div className="mt-2 flex justify-between items-end">
+             {data.photoURL ? (
+                 <img src={data.photoURL} alt="author" className="w-6 h-6 rounded-full border border-black" />
+             ) : (
+                 <User size={16} className="opacity-50"/>
+             )}
+             <div className="text-xs font-mono opacity-80 flex items-center">TAP <Move size={10} className="ml-1"/></div>
         </div>
       </div>
     </div>
   );
-};
+});
 
-// The 3D flip card modal
 const PostcardModal = ({ post, colorTheme, onClose }) => {
   const [isFlipped, setIsFlipped] = useState(false);
 
-  // Auto flip animation on mount
   useEffect(() => {
     const timer = setTimeout(() => setIsFlipped(true), 100);
     return () => clearTimeout(timer);
@@ -181,12 +181,11 @@ const PostcardModal = ({ post, colorTheme, onClose }) => {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="relative w-full max-w-md aspect-[3/2] perspective-1000">
         
-        {/* The Card Container with Transform */}
         <div 
           className={`relative w-full h-full transition-transform duration-700 transform-style-3d cursor-pointer ${isFlipped ? 'rotate-y-180' : ''}`}
           onClick={() => setIsFlipped(!isFlipped)}
         >
-          {/* FRONT (Cover) */}
+          {/* FRONT */}
           <div className={`
             absolute inset-0 backface-hidden
             border-4 border-black 
@@ -199,19 +198,15 @@ const PostcardModal = ({ post, colorTheme, onClose }) => {
              </h2>
              <div className="w-16 h-2 bg-black mb-4" />
              <p className="text-xl font-bold">{post.message}</p>
-             <div className="absolute bottom-4 right-4 text-xs font-mono animate-pulse">
-               (Tap to open)
-             </div>
           </div>
 
-          {/* BACK (Details) */}
+          {/* BACK */}
           <div className={`
             absolute inset-0 backface-hidden rotate-y-180
             bg-[#FFFBEB] text-black border-4 border-black
             shadow-[16px_16px_0px_0px_rgba(0,0,0,1)]
             flex flex-col
           `}>
-            {/* Postcard Lines */}
             <div className="flex-1 flex p-6 gap-6">
               <div className="flex-1 text-left">
                  <div className="uppercase text-xs font-bold text-gray-400 mb-1">More Details</div>
@@ -221,11 +216,13 @@ const PostcardModal = ({ post, colorTheme, onClose }) => {
               </div>
               <div className="w-px bg-gray-300 self-stretch mx-2" />
               <div className="w-1/3 flex flex-col items-center pt-2">
-                 <div className="w-16 h-20 border-2 border-dashed border-gray-400 mb-4 flex items-center justify-center text-gray-300">
-                   <User size={24} />
-                 </div>
-                 <div className="w-full h-px bg-gray-300 my-4" />
-                 <div className="w-full h-px bg-gray-300 my-4" />
+                 {post.photoURL ? (
+                     <img src={post.photoURL} className="w-20 h-20 rounded-full border-2 border-black mb-4 object-cover" />
+                 ) : (
+                     <div className="w-16 h-20 border-2 border-dashed border-gray-400 mb-4 flex items-center justify-center text-gray-300">
+                        <User size={24} />
+                     </div>
+                 )}
                  <div className="w-full h-px bg-gray-300 my-4" />
               </div>
             </div>
@@ -243,14 +240,19 @@ const PostcardModal = ({ post, colorTheme, onClose }) => {
   );
 };
 
-const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting }) => {
+const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting, user }) => {
   const [formData, setFormData] = useState({ name: '', message: '', details: '' });
   const [isMagicLoading, setIsMagicLoading] = useState(false);
 
-  // Reset form when opening
   useEffect(() => {
-    if (isOpen) setFormData({ name: '', message: '', details: '' });
-  }, [isOpen]);
+    if (isOpen) {
+        setFormData({ 
+            name: user?.displayName || '', 
+            message: '', 
+            details: '' 
+        });
+    }
+  }, [isOpen, user]);
 
   const handleChange = (e) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -258,14 +260,12 @@ const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting }) => {
 
   const handleMagicDraft = async () => {
     if (!formData.name && !formData.message) return;
-    
     setIsMagicLoading(true);
     const prompt = `
       Write a fun, punchy, pop-art inspired short bio (max 3 sentences) for a community board. 
       The person's name is "${formData.name || 'Anonymous'}" and their headline message is "${formData.message || 'Hello world'}".
       Make it sound cool, artistic, and energetic. Do not use hashtags.
     `;
-    
     const result = await callGemini(prompt);
     setFormData(prev => ({ ...prev, details: result }));
     setIsMagicLoading(false);
@@ -276,10 +276,13 @@ const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting }) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in zoom-in duration-200">
       <div className="bg-white w-full max-w-lg border-4 border-black shadow-[12px_12px_0px_0px_#00FF99] p-6 relative">
-        <div className="absolute top-0 left-0 w-full h-4 bg-black" />
-        
-        <button onClick={onClose} className="absolute top-6 right-4 hover:rotate-90 transition-transform">
-          <X size={28} />
+        {/* FIXED: Larger Hit Area for Close Button on Mobile, Removed rotate-animation */}
+        <button 
+            onClick={onClose} 
+            className="absolute top-2 right-2 p-4 active:scale-95 transition-transform z-10 text-black hover:text-red-500"
+            aria-label="Close"
+        >
+          <X size={32} />
         </button>
 
         <h2 className="text-3xl font-black mb-6 uppercase italic transform -rotate-1">
@@ -351,55 +354,65 @@ const AddModal = ({ isOpen, onClose, onSubmit, isSubmitting }) => {
 
 const VibeModal = ({ isOpen, onClose, vibe, isLoading }) => {
     if (!isOpen) return null;
-
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-[#FFFF00] w-full max-w-md border-4 border-black shadow-[12px_12px_0px_0px_#FF0099] p-8 text-center relative transform rotate-1">
                 <button onClick={onClose} className="absolute top-2 right-2 p-1 border-2 border-black bg-white hover:bg-gray-100">
                     <X size={20} />
                 </button>
-                
                 <div className="mb-4 flex justify-center">
                     <div className="bg-black text-white p-3 rounded-full">
                         {isLoading ? <Loader2 className="animate-spin" size={32} /> : <Zap size={32} />}
                     </div>
                 </div>
-
                 <h3 className="font-black text-2xl uppercase mb-4">Current Board Vibe</h3>
-                
                 {isLoading ? (
                     <p className="font-mono text-sm animate-pulse">Scanning the canvas...</p>
                 ) : (
-                    <div className="font-bold text-lg leading-tight italic">
-                        "{vibe}"
-                    </div>
+                    <div className="font-bold text-lg leading-tight italic">"{vibe}"</div>
                 )}
             </div>
         </div>
     );
 }
 
-// New Modal for Permission Errors
 const RulesErrorModal = ({ isOpen }) => {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-red-900/90 backdrop-blur-md animate-in fade-in zoom-in duration-200">
       <div className="bg-white w-full max-w-lg border-4 border-black shadow-[12px_12px_0px_0px_#FF0000] p-6 text-center">
-        <div className="flex justify-center mb-4 text-red-600">
-          <ShieldAlert size={64} />
-        </div>
-        <h2 className="text-3xl font-black mb-4 uppercase">Access Denied!</h2>
-        <p className="font-bold mb-4">
-          Your Firebase Database is locked.
-        </p>
+        <div className="flex justify-center mb-4 text-red-600"><ShieldAlert size={64} /></div>
+        <h2 className="text-3xl font-black mb-4 uppercase">Database Locked</h2>
+        <p className="font-bold mb-4">The app is connected, but the database is blocking it.</p>
         <div className="text-left bg-gray-100 p-4 border-2 border-black mb-6 text-sm font-mono">
-          1. Go to Firebase Console &gt; Build &gt; Firestore Database.<br/>
-          2. Click the "Rules" tab.<br/>
-          3. Change "false" to "true":<br/>
-          <span className="text-green-600 font-bold">allow read, write: if true;</span><br/>
-          4. Click "Publish".
+          Go to Firebase Console &gt; Build &gt; Firestore Database &gt; Rules.<br/>
+          Change to <code>allow read, write: if true;</code> just for testing!
         </div>
-        <p className="text-sm font-bold text-gray-500">Refresh this page after publishing.</p>
+        <button onClick={() => window.location.reload()} className="bg-red-600 text-white font-bold py-2 px-6 hover:bg-red-700 border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+          Reload App
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// NEW: Error Modal for blocked API keys (The "Good" Error)
+const LoginErrorModal = ({ isOpen }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in zoom-in duration-200">
+      <div className="bg-white w-full max-w-lg border-4 border-black shadow-[12px_12px_0px_0px_#00FF99] p-6 text-center relative transform -rotate-1">
+        <div className="flex justify-center mb-4 text-green-600"><Lock size={64} /></div>
+        <h2 className="text-3xl font-black mb-4 uppercase">Security Active!</h2>
+        <p className="font-bold mb-4 text-lg">
+          Google Cloud blocked this login because you successfully restricted your API Key.
+        </p>
+        <div className="bg-yellow-100 p-4 border-2 border-black mb-6 text-sm font-bold text-left">
+          <p className="mb-2">✅ This is GOOD news!</p>
+          <p>It means your key is secure and only works on Vercel.</p>
+          <p className="mt-2 text-gray-600 font-mono text-xs">Error: auth/requests-from-referer-blocked</p>
+        </div>
+        <div className="text-sm font-bold text-gray-500 mb-4">Deploy this code to Vercel to see it work!</div>
       </div>
     </div>
   );
@@ -414,6 +427,7 @@ export default function App() {
   const [selectedPost, setSelectedPost] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [permissionError, setPermissionError] = useState(false);
+  const [loginError, setLoginError] = useState(false); // Track login blocks
 
   // Vibe Check State
   const [isVibeModalOpen, setIsVibeModalOpen] = useState(false);
@@ -436,77 +450,82 @@ export default function App() {
 
   // 1. Auth Init
   useEffect(() => {
-    const initAuth = async () => {
-        try {
-            await signInAnonymously(auth);
-        } catch (error) {
-            console.error("Login failed:", error);
-        }
-    };
-    initAuth();
     return onAuthStateChanged(auth, setUser);
   }, []);
 
+  const handleLogin = async () => {
+    try {
+        setLoginError(false);
+        await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+        console.error("Login Error", err);
+        // Detect the specific "Hard Lock" error
+        if (err.code && err.code.includes('requests-from-referer')) {
+            setLoginError(true);
+        } else {
+            alert("Login failed! (Did you enable Google Provider in Firebase Console?)");
+        }
+    }
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  const handleDonate = () => {
+      window.open('https://buy.stripe.com/test_placeholder', '_blank');
+  };
+
   // 2. Data Sync
   useEffect(() => {
-    if (!user) return;
     const q = query(
       collection(db, 'artifacts', appId, 'public', 'data', 'board_posts'),
       orderBy('createdAt', 'asc') 
     );
-
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const loadedPosts = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
       setPosts(loadedPosts);
-      setPermissionError(false); // Clear error if successful
+      setPermissionError(false);
     }, (err) => {
-      console.error("Data fetch error", err);
-      if (err.code === 'permission-denied') {
-        setPermissionError(true);
-      }
+      if (err.code === 'permission-denied') setPermissionError(true);
     });
-
     return () => unsubscribe();
-  }, [user]);
+  }, []);
 
   // 3. Handlers
   const handleAddPost = async (data) => {
-    if (!user) return;
+    if (!user) {
+        alert("Please login to post!");
+        return;
+    }
     setIsSubmitting(true);
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'board_posts'), {
         ...data,
         createdAt: serverTimestamp(),
-        authorId: user.uid
+        authorId: user.uid,
+        photoURL: user.photoURL 
       });
       setIsAddModalOpen(false);
     } catch (err) {
-      console.error("Error adding post", err);
-      if (err.code === 'permission-denied') {
-        setPermissionError(true);
-      } else {
-        alert("Failed to post message. Try again!");
-      }
+      if (err.code === 'permission-denied') setPermissionError(true);
+      else alert("Failed to post message. Try again!");
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  // Memoized callback so we can pass it to the Memoized Card
+  const handleCardClick = useCallback((data, color) => {
+     setSelectedPost({ data, color });
+  }, []);
+
   const handleVibeCheck = async () => {
     setIsVibeModalOpen(true);
     setIsVibeLoading(true);
-    
-    // Get recent posts text
     const recentPostsText = posts.slice(-10).map(p => `${p.name} says: ${p.message}`).join(". ");
-    const prompt = `
-        Analyze these community messages and describe the current 'vibe' of the board in 1 short, witty, pop-art inspired sentence. 
-        Act like an art critic. 
-        Messages: ${recentPostsText || "The board is empty and waiting for art."}
-    `;
-
+    const prompt = `Analyze these community messages and describe the current 'vibe' of the board in 1 short, witty, pop-art inspired sentence. Act like an art critic. Messages: ${recentPostsText || "The board is empty and waiting for art."}`;
     const result = await callGemini(prompt);
     setBoardVibe(result);
     setIsVibeLoading(false);
@@ -514,7 +533,7 @@ export default function App() {
 
   // Canvas Logic
   const handlePointerDown = (e) => {
-    if (e.target.closest('.card-interactive')) return;
+    if (e.target.closest('.card-interactive') || e.target.closest('button')) return;
     isDragging.current = true;
     lastPos.current = { x: e.clientX, y: e.clientY };
     containerRef.current.style.cursor = 'grabbing';
@@ -566,44 +585,14 @@ export default function App() {
 
   return (
     <div className="w-full h-screen overflow-hidden bg-[#e5e5e5] text-black font-sans select-none relative">
-      
-      {/* --- Background Pattern --- */}
-      <div className="absolute inset-0 opacity-10 pointer-events-none" 
-           style={{ 
-             backgroundImage: 'radial-gradient(#000 2px, transparent 2px)', 
-             backgroundSize: '20px 20px' 
-           }} 
-      />
+      <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#000 2px, transparent 2px)', backgroundSize: '20px 20px' }} />
 
-      {/* --- Infinite Canvas --- */}
-      <div 
-        ref={containerRef}
-        className="w-full h-full cursor-grab touch-none"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
-        onTouchMove={handleTouchMove}
-        onWheel={handleWheel}
-      >
-        <div 
-          style={{
-            transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-            transformOrigin: '0 0',
-            width: '100%',
-            height: '100%',
-            position: 'absolute'
-          }}
-        >
+      <div ref={containerRef} className="w-full h-full cursor-grab touch-none" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} onTouchMove={handleTouchMove} onWheel={handleWheel}>
+        {/* OPTIMIZATION: added will-change-transform for smooth GPU performance */}
+        <div style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, transformOrigin: '0 0', width: '100%', height: '100%', position: 'absolute' }} className="will-change-transform">
           {posts.map((post, index) => (
-            <Card 
-              key={post.id} 
-              index={index} 
-              data={post} 
-              onClick={(p, c) => setSelectedPost({ data: p, color: c })} 
-            />
+            <Card key={post.id} index={index} data={post} onClick={handleCardClick} />
           ))}
-          
           {posts.length === 0 && (
              <div className="absolute top-40 left-40 w-64 p-6 bg-white border-4 border-black text-center transform -rotate-3 shadow-[8px_8px_0px_0px_#ccc]">
                 <h3 className="font-bold text-xl mb-2">It's quiet here...</h3>
@@ -613,41 +602,35 @@ export default function App() {
         </div>
       </div>
 
-      {/* --- HUD / Controls --- */}
+      {/* --- HUD --- */}
       <div className="absolute bottom-6 right-6 flex flex-col gap-4 z-40 items-end">
         
-        {/* Vibe Check Button */}
-        <Button 
-            variant="secondary" 
-            onClick={handleVibeCheck}
-            className="px-4 py-2 rounded-full text-sm animate-bounce-slow"
-        >
+        {/* Support Button */}
+        <Button variant="support" onClick={handleDonate} className="px-4 py-2 rounded-full text-sm animate-bounce-slow">
+            <Coffee size={16} />
+            SUPPORT ME
+        </Button>
+
+        <Button variant="secondary" onClick={handleVibeCheck} className="px-4 py-2 rounded-full text-sm">
             <Sparkles size={16} className="text-[#FF0099]" />
             ✨ VIBE CHECK
         </Button>
 
         <div className="hidden md:flex flex-col bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] rounded-lg overflow-hidden">
-            <button 
-                onClick={() => setView(v => ({ ...v, scale: Math.min(v.scale + 0.2, 3) }))}
-                className="p-3 hover:bg-gray-100 border-b border-gray-200"
-            >
-                <Plus size={20} />
-            </button>
-            <button 
-                onClick={() => setView(v => ({ ...v, scale: Math.max(v.scale - 0.2, 0.2) }))}
-                className="p-3 hover:bg-gray-100"
-            >
-                <div className="w-4 h-0.5 bg-black" />
-            </button>
+            <button onClick={() => setView(v => ({ ...v, scale: Math.min(v.scale + 0.2, 3) }))} className="p-3 hover:bg-gray-100 border-b border-gray-200"><Plus size={20} /></button>
+            <button onClick={() => setView(v => ({ ...v, scale: Math.max(v.scale - 0.2, 0.2) }))} className="p-3 hover:bg-gray-100"><div className="w-4 h-0.5 bg-black" /></button>
         </div>
 
-        <Button 
-          variant="icon" 
-          onClick={() => setIsAddModalOpen(true)}
-          className="w-16 h-16 rounded-full flex items-center justify-center animate-bounce-slow"
-        >
-          <Plus size={32} strokeWidth={3} />
-        </Button>
+        {/* Dynamic Add/Login Button */}
+        {user ? (
+            <Button variant="icon" onClick={() => setIsAddModalOpen(true)} className="w-16 h-16 rounded-full flex items-center justify-center">
+              <Plus size={32} strokeWidth={3} />
+            </Button>
+        ) : (
+            <Button variant="primary" onClick={handleLogin} className="w-16 h-16 rounded-full flex items-center justify-center p-0">
+               <LogIn size={24} />
+            </Button>
+        )}
       </div>
 
       {/* --- Top Bar --- */}
@@ -656,54 +639,31 @@ export default function App() {
           <h1 className="font-black text-2xl tracking-tighter uppercase italic">
             Community<span className="text-[#FF0099]">Board</span>
           </h1>
-          <div className="text-xs font-bold mt-1 flex gap-2">
+          <div className="text-xs font-bold mt-1 flex items-center gap-2">
              <span className="bg-black text-white px-1">{posts.length} POSTS</span>
-             <span className="bg-[#FFFF00] text-black px-1">LIVE</span>
+             {user && (
+                 <button onClick={handleLogout} className="flex items-center gap-1 hover:text-red-500 hover:underline">
+                     <span className="max-w-[100px] truncate">{user.displayName}</span>
+                     <LogOut size={10} />
+                 </button>
+             )}
           </div>
         </div>
       </div>
 
-      {/* --- Modals --- */}
-      <AddModal 
-        isOpen={isAddModalOpen} 
-        onClose={() => setIsAddModalOpen(false)} 
-        onSubmit={handleAddPost}
-        isSubmitting={isSubmitting}
-      />
-
-      {selectedPost && (
-        <PostcardModal 
-          post={selectedPost.data} 
-          colorTheme={selectedPost.color}
-          onClose={() => setSelectedPost(null)} 
-        />
-      )}
-
-      <VibeModal 
-        isOpen={isVibeModalOpen}
-        onClose={() => setIsVibeModalOpen(false)}
-        vibe={boardVibe}
-        isLoading={isVibeLoading}
-      />
-
+      <AddModal isOpen={isAddModalOpen} onClose={() => setIsAddModalOpen(false)} onSubmit={handleAddPost} isSubmitting={isSubmitting} user={user} />
+      {selectedPost && <PostcardModal post={selectedPost.data} colorTheme={selectedPost.color} onClose={() => setSelectedPost(null)} />}
+      <VibeModal isOpen={isVibeModalOpen} onClose={() => setIsVibeModalOpen(false)} vibe={boardVibe} isLoading={isVibeLoading} />
       <RulesErrorModal isOpen={permissionError} />
+      <LoginErrorModal isOpen={loginError} />
 
-      {/* --- Instruction Overlay (fades out) --- */}
-      <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded-full text-sm font-bold pointer-events-none animate-fade-out-delayed">
-        Drag to move • Pinch to zoom • Tap cards
-      </div>
-      
       <style>{`
         .perspective-1000 { perspective: 1000px; }
         .transform-style-3d { transform-style: preserve-3d; }
         .backface-hidden { backface-visibility: hidden; }
         .rotate-y-180 { transform: rotateY(180deg); }
         .animate-bounce-slow { animation: bounce 3s infinite; }
-        @keyframes fadeOut {
-            0% { opacity: 1; }
-            80% { opacity: 1; }
-            100% { opacity: 0; display: none; }
-        }
+        @keyframes fadeOut { 0% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; display: none; } }
         .animate-fade-out-delayed { animation: fadeOut 5s forwards; }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
@@ -711,5 +671,3 @@ export default function App() {
         .font-handwriting { font-family: 'Permanent Marker', cursive; }
       `}</style>
     </div>
-  );
-}
