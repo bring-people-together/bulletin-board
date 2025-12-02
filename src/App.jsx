@@ -671,3 +671,5 @@ export default function App() {
         .font-handwriting { font-family: 'Permanent Marker', cursive; }
       `}</style>
     </div>
+  );
+}
